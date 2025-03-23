@@ -19,8 +19,7 @@ API_HASH = str(os.getenv('API_HASH')).strip("'")
 BOT_TOKEN = str(os.getenv('BOT_TOKEN')).strip("'")
 SESSIONS_DIRECTORY = os.getenv('SESSIONS_DIRECTORY')
 
-session = get_session_files(SESSIONS_DIRECTORY)[0]
-client = TelegramClient(session=session, api_id=API_ID, api_hash=API_HASH).start(bot_token=BOT_TOKEN)
+client = TelegramClient('bot', api_id=API_ID, api_hash=API_HASH).start(bot_token=BOT_TOKEN)
 
 active_timers = {}
 
