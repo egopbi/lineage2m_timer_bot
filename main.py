@@ -44,12 +44,8 @@ async def calculate_respawn_datetime(kill_datetime, now, user_id, boss_name):
 async def main():
     try:
         await init_db()
-        client = await get_client()
-        if BOT_TOKEN == 'abbas-token':
-            backend_logger.error("Unfilled value of BOT_TOKEN")
-            raise ValueError("Fill your BOT_TOKEN in .env file!")
+        client = await get_client(as_bot=True)
         
-        await client.start(bot_token=BOT_TOKEN)
         backend_logger.success("Bot successfully started")
         
         
