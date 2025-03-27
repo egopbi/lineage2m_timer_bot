@@ -1,0 +1,7 @@
+API_ID = 1234
+API_HASH = abbas
+BOT_TOKEN = abbas-token
+SESSIONS_DIRECTORY = sessions/
+
+DATABASE_URL=postgresql+asyncpg://db_user:db_password@localhost:5432/lineage2m
+DATABASE_ECHO=True

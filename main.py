@@ -1,6 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
-from itertools import groupby
+from itertools import groupby, tee
+import time
 
 import pytz
 from telethon import events
@@ -9,10 +10,10 @@ from telethon.tl.types import BotCommand, BotCommandScopeDefault, BotMenuButtonC
 from tzlocal import get_localzone
 
 from config import BOT_TOKEN
-from database import DataBaseAPI
+from database.db_logic import DataBaseAPI
 from intervals import respawn_intervals
 
-from utils.helper import user_to_system_tz, system_to_user_tz, seconds_to_hh_mm
+from utils.time_helper import user_to_system_tz, system_to_user_tz, seconds_to_hh_mm
 from utils.logger import backend_logger
 from utils.get_client import get_client
 
@@ -34,17 +35,22 @@ async def calculate_respawn_datetime(kill_datetime, now, user_id, boss_name):
     if kill_datetime > now: # It was yesterday
         kill_datetime -= timedelta(days=1)
 
-    interval = await db.get_boss_respawn(user_id=user_id, boss_name=boss_name)                                         
-    respawn_datetime = kill_datetime + timedelta(hours=interval)
-    return respawn_datetime
+    interval_raw = await db.get_boss_respawn(user_id=user_id, boss_name=boss_name)
+    interval = timedelta(hours=interval_raw)                                         
+    respawn_datetime = kill_datetime + interval
+    return respawn_datetime, interval
 
 
 async def main():
     try:
         await init_db()
         client = await get_client()
+        if BOT_TOKEN == 'abbas-token':
+            backend_logger.error("Unfilled value of BOT_TOKEN")
+            raise ValueError("Fill your BOT_TOKEN in .env file!")
+        
         await client.start(bot_token=BOT_TOKEN)
-        backend_logger.success(f"Bot successfully started")
+        backend_logger.success("Bot successfully started")
         
         
         async def set_bot_commands():
@@ -58,13 +64,17 @@ async def main():
                 BotCommand(command="help", description="Описание команд бота"),
                 BotCommand(command="info", description="Информация о боте"),
             ]
-            await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code='en', commands=commands))
+            await client(SetBotCommandsRequest(
+                scope=BotCommandScopeDefault(), 
+                lang_code='en', 
+                commands=commands
+            ))
             await client(SetBotMenuButtonRequest(user_id='self', button=BotMenuButtonCommands()))
             return True
         
 
         if await set_bot_commands():
-            backend_logger.success(f"Bot commands was successfully setted")
+            backend_logger.success("Bot commands was successfully setted")
 
 
         @client.on(events.NewMessage(pattern=r'/bosses'))
@@ -123,51 +133,81 @@ async def main():
                     now = system_tz.localize(datetime.now())
                     kill_datetime = user_to_system_tz(datetime.combine(now.date(), kill_time))
 
-            respawn_datetime = await calculate_respawn_datetime(kill_datetime, now, user_id, boss_name)        
+            respawn_datetime, interval = await calculate_respawn_datetime(
+                kill_datetime, 
+                now, 
+                user_id, 
+                boss_name
+            )        
 
             if respawn_datetime < now:
-                await event.reply(f"❌ Босс **{boss_name}** уже возродился, скорее беги его убивать!")
-                backend_logger.error(f"In chat {chat_id} User {user_id} tried to create expired timer")
-                return
-            else:
-            
-                timer = await db.add_timer(
-                    user_id=user_id,
-                    chat_id=chat_id, 
-                    boss_name=boss_name, 
-                    respawn_time=respawn_datetime
+                await event.reply(
+                    f"❌ Босс **{boss_name}** уже возродился, скорее беги его убивать!"
                 )
-                if not timer:
-                    await event.reply(f"❌ Проблема с доступом в базу данных")
-                    backend_logger.error("Trouble with db when adding timer into 'add_timer' function")
-                    return
-                remaining_time = respawn_datetime - now
-                wait_seconds = remaining_time.total_seconds()
-                
-                remaining_formatted_time = seconds_to_hh_mm(wait_seconds)
+                backend_logger.error(
+                    f"In chat {chat_id} User {user_id} tried to create expired timer"
+                )
+                return
+            
+            timer = await db.add_timer(
+                user_id=user_id,
+                chat_id=chat_id, 
+                boss_name=boss_name, 
+                respawn_time=respawn_datetime
+            )
+            if not timer:
+                await event.reply("❌ Проблема с доступом в базу данных")
+                backend_logger.error(
+                    "Trouble with db when adding timer into 'add_timer' function"
+                )
+                return
+            backend_logger.success(
+                f"In chat {chat_id} User {user_id} created timer {timer.timer_id}"
+            )
 
+            remaining_time = respawn_datetime - now
+            wait_seconds = remaining_time.total_seconds()
+            remaining_formatted_time = seconds_to_hh_mm(wait_seconds)
+
+            while True:
                 await event.reply(
                     f"✅ Таймер на респаун босса **{timer.boss_name}** установлен на "
                     f"{system_to_user_tz(respawn_datetime)}\nID таймера: `{timer.timer_id}`\n"
                     f"Оставшееся время {remaining_formatted_time}"
                 )
-                backend_logger.success(f"In chat {chat_id} User {user_id} created timer {timer.timer_id}")
 
                 await asyncio.sleep(wait_seconds)
-                await event.reply(f"✅ Босс **{boss_name}** возродился, скорее беги его убивать!")
-                backend_logger.success(f"In chat {chat_id} User {user_id} response notification from timer {timer.timer_id}")
-                
-                if not await db.delete_timer(user_id, chat_id, timer.timer_id):
-                    backend_logger.error("Trouble with db when deleting timer into 'add_timer' function")
+                if not await db._get_timer(timer):
+                    backend_logger.info(f"Timer {timer.timer_id} was already deleted")
                     return
-
+                
+                await event.reply(f"✅ Босс **{boss_name}** возродился, скорее беги его убивать!")
                 backend_logger.success(
-                    f"In chat {chat_id} User {user_id} automatically deleted timer "
-                    f"{timer.timer_id} into 'add_timer' function"
+                    f"In chat {chat_id} User {user_id} response "
+                    f"notification from timer {timer.timer_id}"
                 )
+                await asyncio.sleep(300)
+                if not await db._get_timer(timer):
+                    backend_logger.info(f"Timer {timer.timer_id} was already deleted")
+                    return
+                
+                respawn_datetime += interval + timedelta(seconds=300)
+                timer = await db.update_timer(timer, respawn_datetime)
+                if not timer:
+                    await event.reply("❌ Проблема с доступом в базу данных")
+                    backend_logger.error(
+                        "Trouble with db when updating timer into 'add_timer' function"
+                    )
+                    return
+    
+                backend_logger.success(
+                    f"In chat {chat_id} User {user_id} automatically updated timer {timer.timer_id}"
+                )
+                wait_seconds = interval.total_seconds()
+                remaining_formatted_time = seconds_to_hh_mm(wait_seconds)
 
 
-        @client.on(events.NewMessage(pattern=r'/delete\s*([\w-]+)'))
+        @client.on(events.NewMessage(pattern=r'^/delete(?!_)\s*([\w-]+)$'))
         async def delete_timer(event):
             chat_id = str(event.chat_id)
             user_id = str(event.sender_id)
@@ -175,7 +215,7 @@ async def main():
             try:
                 timer_id = str(event.pattern_match.group(1))
             except ValueError:
-                await event.reply(f"❌ Введите целое значение")
+                await event.reply("❌ Введите целое значение")
                 backend_logger.error(
                     f"In chat {chat_id} User {user_id} used wrong command "
                     f"`{event.message.message}`. "
@@ -185,9 +225,17 @@ async def main():
             backend_logger.info(
                 f"In chat {chat_id} User {user_id} use `{event.message.message}`"
             )
+            res = await db.delete_timer(user_id, chat_id, timer_id)
 
-            if not await db.delete_timer(user_id, chat_id, timer_id):
-                await event.reply(f"❌ Проблема с доступом в базу данных")
+            if res == 'alien':
+                await event.reply("❌ Нельзя удалить чужой таймер")
+                backend_logger.error(
+                    f"In chat {chat_id} User {user_id} tried to delete alien timer"
+                )
+                return
+
+            if not res:
+                await event.reply("❌ Проблема с доступом в базу данных")
                 backend_logger.error("Trouble with db when running 'delete_timer' function")
                 return
 
@@ -195,6 +243,34 @@ async def main():
             backend_logger.success(f"In chat {chat_id} User {user_id} "
                                    f"succesfully deleted timer {timer_id}")
 
+
+        @client.on(events.NewMessage(pattern=r'/delete_all_timers'))
+        async def delete__all_timers(event):
+            chat_id = str(event.chat_id)
+            user_id = str(event.sender_id)
+
+            backend_logger.info(
+                f"In chat {chat_id} User {user_id} use `{event.message.message}`"
+            )
+            res = await db.delete_all_timers_in_chat(chat_id)
+
+            if res == 'no_timers':
+                await event.reply("❌ В беседе нет таймеров")
+                backend_logger.error(
+                    f"In chat {chat_id} User {user_id} tried to "
+                    f"delete all_timers but ther were gone"
+                )
+                return
+
+            if not res:
+                await event.reply(f"❌ Проблема с доступом в базу данных")
+                backend_logger.error("Trouble with db when running 'delete_timer' function")
+                return
+
+            await event.reply("✅ Все таймеры успешно удалены")
+            backend_logger.success(f"In chat {chat_id} User {user_id} "
+                                   f"succesfully deleted all timers")
+            
 
         @client.on(events.NewMessage(pattern=r'^/get(?!_my)(?:@\w+)?(?:\s+(\d+))?$'))
         async def get_chat_timers(event):
@@ -231,8 +307,8 @@ async def main():
             else:
                 timers = await db.get_chat_timers(user_id, chat_id, timer_numbers)
             
-            if not timers:
-                await event.reply(f"❌ Проблема с доступом в базу данных")
+            if timers is False:
+                await event.reply("❌ Проблема с доступом в базу данных")
                 backend_logger.error("Trouble with db when running 'get_chat_timers' function")
                 return
             
@@ -242,16 +318,20 @@ async def main():
                 return
         
             text_strings = list()
-            text_strings.append(f"**Ближайшие возрождения**")
+            text_strings.append("**Ближайшие возрождения**")
             now = moscow_tz.localize(datetime.now())
             
 
             for user_id, timer_group in groupby(timers, key=lambda x: x.user_id):
+                timer_group, timer_group_copy = tee(timer_group)
+                example_timer = list(timer_group_copy)[0]
+                user_id = example_timer.user_id
+                userinfo = await db.get_userinfo(user_id)
+                nickname, firstname = userinfo[0], userinfo[1]
                 text_strings.append(
                     f"\n-------------------------------------\n"
                     f"Участник: **{firstname}** ({nickname})"
                 )
-
 
                 for timer in timer_group:
                     remaining_time = (timer.respawn_time - now).total_seconds()
@@ -265,7 +345,9 @@ async def main():
         
             text_message = "\n".join(text_strings)
             await event.reply(text_message)
-            backend_logger.success(f"In chat {chat_id} User {user_id} got {len(timers)} chat timers")
+            backend_logger.success(
+                f"In chat {chat_id} User {user_id} got {len(timers)} chat timers"
+            )
         
         
         @client.on(events.NewMessage(pattern=r'/get_my(?:\s+(\d+))?'))
@@ -303,7 +385,7 @@ async def main():
             else:
                 timers = await db.get_user_timers(user_id, chat_id, timer_numbers)
             
-            if not timers:
+            if timers is False:
                 await event.reply(f"❌ Проблема с доступом в базу данных")
                 backend_logger.error("Trouble with db when running 'get_user_timers' function")
                 return
@@ -332,10 +414,13 @@ async def main():
         
             text_message = "\n\n".join(text_strings)
             await event.reply(text_message)
-            backend_logger.success(f"In chat {chat_id} User {user_id} got {len(timers)} personal timers")
+            backend_logger.success(
+                f"In chat {chat_id} User {user_id} "
+                f"got {len(timers)} personal timers"
+            )
 
 
-        @client.on(events.NewMessage(pattern='/start'))
+        @client.on(events.NewMessage(pattern=r'^/start(@\w+)?$'))
         async def start_command(event):
             chat_id = str(event.chat_id)
             chat = await event.get_chat()
@@ -358,7 +443,7 @@ async def main():
             )
 
 
-        @client.on(events.NewMessage(pattern='/info'))
+        @client.on(events.NewMessage(pattern=r'^/info(@\w+)?$'))
         async def info_command(event):
             await event.reply(
                 "Бот был создан в качестве помощника для игры lineage2m. "
@@ -366,26 +451,28 @@ async def main():
             )
 
 
-        @client.on(events.NewMessage(pattern='/help'))
+        @client.on(events.NewMessage(pattern=r'^/help(@\w+)?$'))
         async def help_command(event):
             help_text = (
                 "**Доступные команды:**\n\n"
-                f"/bosses \n- Выводит список всех боссов с возможностью быстро скопировать имя\n\n"
+                "/bosses \n- Выводит список всех боссов с возможностью быстро скопировать имя\n\n"
                 "-------------------------------------\n"
-                f"/set <имя_босса> <время_убийства>\n- устанавливает таймер на босса по его имени. "
-                f"Формат времени ЧЧ:ММ (если время убийства не указано, то учитывается как текущее)\n\n"
+                "/set <имя_босса> <время_убийства>\n- устанавливает таймер на босса по его имени. "
+                "Формат времени ЧЧ:ММ (если время убийства не указано, "
+                "то учитывается как текущее)\n\n"
                 "-------------------------------------\n"
-                f"/get <кол-во выводимых таймеров>\n- выводит определенное кол-во активных таймеров в беседе\n\n"
+                "/get <кол-во выводимых таймеров>\n- выводит "
+                "определенное кол-во активных таймеров в беседе\n\n"
                 "-------------------------------------\n"
-                f"/get\n- выводит все активные таймеры в беседе\n\n"
+                "/get\n- выводит все активные таймеры в беседе\n\n"
                 "-------------------------------------\n"
-                f"/get_my\n- выводит все личные активные таймеры в беседе\n\n"
+                "/get_my\n- выводит все личные активные таймеры в беседе\n\n"
                 "-------------------------------------\n"
-                f"/delete <id_таймера>\n- удаляет таймер с определенным ID\n\n"
+                "/delete <id_таймера>\n- удаляет таймер с определенным ID\n\n"
                 "-------------------------------------\n"
-                f"/info\n- Информация о боте\n\n"
+                "/info\n- Информация о боте\n\n"
                 "-------------------------------------\n"
-                f"/help\n- список команд"
+                "/help\n- список команд"
             )
             await event.reply(help_text)
 
@@ -404,7 +491,17 @@ async def main():
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        backend_logger.info(f"KeyboardInterrupt")
+    while True:
+        try:
+            asyncio.run(main())
+        
+        except ConnectionError:
+            time.sleep(30)
+
+        except KeyboardInterrupt:
+            backend_logger.info("KeyboardInterrupt")
+            break
+        
+        except Exception as e:
+            backend_logger.error(f"Unexpected error: {str(e)}. Restarting in 60 seconds...")
+            time.sleep(60)

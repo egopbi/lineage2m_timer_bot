@@ -25,12 +25,12 @@ async def get_client() -> TelegramClient:
     os.makedirs(SESSIONS_DIRECTORY, exist_ok=True)
 
     if len(os.listdir(SESSIONS_DIRECTORY)) == 0:
-        backend_logger.error(f"You need to create at least one session by register_session()")
+        backend_logger.error("You need to create at least one session by register_session()")
         backend_logger.info("Creating session")
         try:
             client = await register_session()
         except ValueError:
-            backend_logger.error(f'Please fill your API_ID and API_HASH')
+            backend_logger.error('Please fill your API_ID and API_HASH')
             return
     else:
         session = get_first_session_file(SESSIONS_DIRECTORY)
