@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta
 from itertools import groupby, tee
-import time
+import signal
 
 import pytz
 from telethon import events
@@ -22,6 +22,11 @@ from utils.get_client import get_client
 db = DataBaseAPI()
 moscow_tz = pytz.timezone("Europe/Moscow")
 system_tz = pytz.timezone(str(get_localzone()))
+
+
+async def shutdown(signal_name):
+    backend_logger.info(f"Received exit signal {signal_name}...")
+    raise SystemExit(f"Bot shutting down due to signal {signal_name}")
 
 
 async def init_db():
@@ -479,25 +484,42 @@ async def main():
     except Exception as e:
         backend_logger.error(f"Error while bot was working. {e}. Disconnecting...")
         await client.disconnect()
-    finally:
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        [task.cancel() for task in tasks]
-        await asyncio.gather(*tasks, return_exceptions=True)
-        backend_logger.info("All tasks was canceled")
+    
 
+async def run_bot():
+    loop = asyncio.get_running_loop()
 
-if __name__ == "__main__":
+    signals = (signal.SIGTERM, signal.SIGINT)
+    for s in signals:
+        loop.add_signal_handler(s, lambda s=s: asyncio.create_task(shutdown(s.name)))
+
     while True:
         try:
-            asyncio.run(main())
-        
+            await main()
         except ConnectionError:
-            time.sleep(30)
-
+            backend_logger.error("ConnectionError. Restarting in 30 seconds...")
+            await asyncio.sleep(30)
         except KeyboardInterrupt:
             backend_logger.info("KeyboardInterrupt")
             break
-        
         except Exception as e:
             backend_logger.error(f"Unexpected error: {str(e)}. Restarting in 60 seconds...")
-            time.sleep(60)
+            await asyncio.sleep(60)
+        finally:
+            backend_logger.info("Cleaning up tasks...")
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            [task.cancel() for task in tasks]
+            await asyncio.gather(*tasks, return_exceptions=True)
+            backend_logger.info("All tasks were canceled")
+
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(run_bot())
+    except SystemExit as e:
+        backend_logger.error(f"Bot terminated with exit: {e}")
+        sys.exit(0)
+    except Exception as e:
+        backend_logger.error(f"Unexpected error during startup: {str(e)}")
+        sys.exit(1)
