@@ -147,29 +147,6 @@ class DataBaseAPI():
                 return False
 
 
-    async def get_all_chat_timers(self, user_id, chat_id) -> list[Timer] | bool:
-        async with self.async_session() as session:
-            try:
-                await self._delete_expired_timers(chat_id)
-                result = await session.execute(
-                    select(Timer)
-                    .filter(Timer.chat_id == chat_id)
-                    .order_by(
-                        Timer.user_id,
-                        Timer.respawn_time
-                    )
-                )
-                timers = result.scalars().all()
-                database_logger.success(f"User {user_id} got all chat timers")
-                
-                return timers
-            except Exception as e:
-                database_logger.error(
-                    f"Error while getting all chat timers by user {user_id}: {str(e)}"
-                )
-                return False
-
-
     async def get_all_user_timers(self, user_id, chat_id) -> list[Timer] | bool:
         async with self.async_session() as session:
             try:
@@ -335,6 +312,7 @@ class DataBaseAPI():
                     
                     if not existing_timer:
                         database_logger.info(f"Timer {timer.timer_id} was deleted")
+                        return False
                     
                     database_logger.success(
                         f"Timer {timer.timer_id} is present in Database"

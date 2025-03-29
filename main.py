@@ -327,7 +327,7 @@ async def main():
         
             text_strings = list()
             text_strings.append("**Ближайшие возрождения**")
-            now = moscow_tz.localize(datetime.now())
+            now = system_tz.localize(datetime.now())
             
 
             for user_id, timer_group in groupby(timers, key=lambda x: x.user_id):
@@ -408,7 +408,7 @@ async def main():
                 f"Участник: **{firstname}** ({nickname})\n"
                 f"**Ближайшие возрождения**"
                 )
-            now = moscow_tz.localize(datetime.now())
+            now = system_tz.localize(datetime.now())
             
             for timer in timers:
                 remaining_time = (timer.respawn_time - now).total_seconds()
