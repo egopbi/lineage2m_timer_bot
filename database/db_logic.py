@@ -1,3 +1,4 @@
+from typing import Literal
 import uuid
 from datetime import datetime, timedelta
 
@@ -90,6 +91,35 @@ class DataBaseAPI():
         async with self.async_session() as session:
             async with session.begin():
                 try:
+                    result = await session.execute(
+                        select(Timer).filter(
+                            Timer.chat_id == chat_id,
+                            Timer.user_id == user_id,
+                            Timer.boss_name == boss_name
+                        )
+                    )
+                    old_timer: Timer = result.scalars().first()
+
+                    if old_timer:
+                        database_logger.info(
+                            f"In db there was the timer {old_timer.timer_id} of user {old_timer.user_id} "
+                            f"with same parameters. Deleting old timer..."
+                        )
+
+                        await session.delete(old_timer)
+                        database_logger.success(
+                            f"User {user_id} autodeleted timer with timer_id: {old_timer.timer_id}"
+                        )
+
+
+                except Exception as e:
+                    database_logger.error(
+                        f"Error while deleting timer {timer_id} before setting"
+                        f" new one by user {user_id}: {str(e)}"
+                    )
+                    return False
+
+                try:
                     timer_id = str(uuid.uuid4())[:10]
                     timer = Timer(
                         timer_id=timer_id, 
@@ -100,7 +130,9 @@ class DataBaseAPI():
                     )
                     session.add(timer)
                     database_logger.success(f"User {user_id} add timer with timer_id: {timer_id}")
+                    await session.commit()
                     return timer
+                
                 except Exception as e:
                     database_logger.error(f"Error while adding timer by user {user_id}: {str(e)}")
                     return False
@@ -300,7 +332,7 @@ class DataBaseAPI():
                     return False
 
 
-    async def _get_timer(self, timer: Timer):
+    async def _get_timer(self, timer: Timer) -> Timer | bool:
         async with self.async_session() as session:
             async with session.begin():
                 try:
