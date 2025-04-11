@@ -1,4 +1,3 @@
-from typing import Literal
 import uuid
 from datetime import datetime, timedelta
 
@@ -42,8 +41,14 @@ class DataBaseAPI():
                 bosses = result.scalars().all()
 
                 if len(bosses) == 0:
-                    for boss_name, time_to_respawn in respawn_intervals.items():
-                        respawn = BossRespawn(boss_name=boss_name, time_to_respawn=time_to_respawn)
+                    for boss_name, times in respawn_intervals.items():
+                        time_to_respawn = times[0]
+                        epoch_time_to_respawn = times[1]
+                        respawn = BossRespawn(
+                            boss_name=boss_name, 
+                            time_to_respawn=time_to_respawn,
+                            epoch_time_to_respawn=epoch_time_to_respawn,
+                        )
                         session.add(respawn)
                     await session.commit()
                     database_logger.success(f"Table '{BossRespawn.__tablename__}' was updated")
@@ -55,8 +60,7 @@ class DataBaseAPI():
                 return False
 
 
-
-    async def get_boss_respawn(self, user_id, boss_name) -> int | bool:
+    async def get_boss_respawn(self, user_id, boss_name) -> int:
         async with self.async_session() as session:
             try:
                 result = await session.execute(
@@ -72,7 +76,7 @@ class DataBaseAPI():
                 return False
                 
 
-    async def get_all_boss_respawns(self, user_id) -> list[BossRespawn] | bool:
+    async def get_all_boss_respawns(self, user_id) -> list[BossRespawn]:
         async with self.async_session() as session:
             try:
                 result = await session.execute(select(BossRespawn))
@@ -87,14 +91,13 @@ class DataBaseAPI():
 
 
 
-    async def add_timer(self, user_id, chat_id, boss_name, respawn_time) -> Timer | bool:
+    async def add_timer(self, user_id, chat_id, boss_name, respawn_time) -> Timer:
         async with self.async_session() as session:
             async with session.begin():
                 try:
                     result = await session.execute(
                         select(Timer).filter(
                             Timer.chat_id == chat_id,
-                            Timer.user_id == user_id,
                             Timer.boss_name == boss_name
                         )
                     )
@@ -102,19 +105,19 @@ class DataBaseAPI():
 
                     if old_timer:
                         database_logger.info(
-                            f"In db there was the timer {old_timer.timer_id} of user {old_timer.user_id} "
+                            f"In db there was the timer {old_timer.timer_id} "
                             f"with same parameters. Deleting old timer..."
                         )
 
                         await session.delete(old_timer)
                         database_logger.success(
-                            f"User {user_id} autodeleted timer with timer_id: {old_timer.timer_id}"
+                            f"User {user_id} autodeleted old timer with timer_id: {old_timer.timer_id}"
                         )
 
 
                 except Exception as e:
                     database_logger.error(
-                        f"Error while deleting timer {timer_id} before setting"
+                        f"Error while deleting timer {old_timer.timer_id} before setting"
                         f" new one by user {user_id}: {str(e)}"
                     )
                     return False
@@ -123,7 +126,6 @@ class DataBaseAPI():
                     timer_id = str(uuid.uuid4())[:10]
                     timer = Timer(
                         timer_id=timer_id, 
-                        user_id=user_id,
                         chat_id=chat_id, 
                         boss_name=boss_name, 
                         respawn_time=respawn_time
@@ -138,7 +140,7 @@ class DataBaseAPI():
                     return False
                 
         
-    async def update_timer(self, timer: Timer, new_respawn_time) -> Timer | bool:
+    async def update_timer(self, timer: Timer, new_respawn_time) -> Timer:
         async with self.async_session() as session:
             async with session.begin():
                 try:
@@ -146,7 +148,7 @@ class DataBaseAPI():
                     session.add(timer)
                     await session.commit()
                     database_logger.success(
-                        f"User {timer.user_id} update timer with timer_id: {timer.timer_id}"
+                        f"Automatically updated timer with timer_id: {timer.timer_id}"
                     )
                     return timer
                 except Exception as e:
@@ -154,9 +156,9 @@ class DataBaseAPI():
                         f"Error while updating timer {timer.timer_id}: {str(e)}"
                     )
                     return False
-                
 
-    async def get_all_chat_timers(self, user_id, chat_id) -> list[Timer] | bool:
+
+    async def get_all_chat_timers(self, user_id, chat_id) -> list[Timer]:
         async with self.async_session() as session:
             try:
                 await self._delete_expired_timers(chat_id)
@@ -164,7 +166,6 @@ class DataBaseAPI():
                     select(Timer)
                     .filter(Timer.chat_id == chat_id)
                     .order_by(
-                        Timer.user_id,
                         Timer.respawn_time
                     )
                 )
@@ -177,66 +178,9 @@ class DataBaseAPI():
                     f"Error while getting all chat timers by user {user_id}: {str(e)}"
                 )
                 return False
-
-
-    async def get_all_user_timers(self, user_id, chat_id) -> list[Timer] | bool:
-        async with self.async_session() as session:
-            try:
-                await self._delete_expired_timers(chat_id)
-                result = await session.execute(
-                    select(Timer)
-                    .filter(
-                        Timer.chat_id == chat_id,
-                        Timer.user_id == user_id
-                    )
-                    .order_by(Timer.respawn_time)
-                )
-                timers = result.scalars().all()
-                database_logger.success(f"User {user_id} got all his timers")
-
-                return timers
-            except Exception as e:
-                database_logger.error(
-                    f"Error while getting all user's timers by user {user_id}: {str(e)}"
-                )
-                return False
-
-
-    async def get_user_timers(self, user_id, chat_id, count) -> list[Timer] | bool:
-        async with self.async_session() as session:
-            try:
-                await self._delete_expired_timers(chat_id)
-                total_count_result = await session.execute(
-                    select(func.count())
-                    .select_from(Timer).filter(Timer.chat_id == chat_id)
-                )
-                total_count = total_count_result.scalar()
-
-                if count < total_count:
-                    result = await session.execute(
-                        select(Timer)
-                        .filter(
-                            Timer.chat_id == chat_id,
-                            Timer.user_id == user_id
-                        )
-                        .order_by(Timer.respawn_time)
-                        .limit(count)
-                    )
-                    timers = result.scalars().all()
-                    database_logger.success(f"User {user_id} got his {count} personal nearest timers")
-                else:
-                    timers = await self.get_all_user_timers(user_id, chat_id)
-
-                return timers
-            
-            except Exception as e:
-                database_logger.error(
-                    f"Error while getting nearest personal timers by user {user_id}: {str(e)}"
-                )
-                return False
             
 
-    async def get_chat_timers(self, user_id, chat_id, count) -> list[Timer] | bool:
+    async def get_chat_timers(self, user_id, chat_id, count) -> list[Timer]:
         async with self.async_session() as session:
             try:
                 await self._delete_expired_timers(chat_id)
@@ -266,7 +210,7 @@ class DataBaseAPI():
                 return False
 
 
-    async def delete_timer(self, user_id, chat_id, timer_id) -> bool:
+    async def delete_timer(self, user_id, timer_id) -> bool:
         async with self.async_session() as session:
             async with session.begin():
                 try:
@@ -283,13 +227,6 @@ class DataBaseAPI():
                             f"delete non-existent timer_id: {timer_id}"
                         )
                         return False
-
-                    if timer.user_id != user_id:
-                        database_logger.error(
-                            f"In chat {chat_id} User {user_id} tried "
-                            f"to delete alien timer_id: {timer_id}"
-                        )
-                        return "alien"
 
                     await session.delete(timer)
                     await session.commit()
@@ -332,7 +269,7 @@ class DataBaseAPI():
                     return False
 
 
-    async def _get_timer(self, timer: Timer) -> Timer | bool:
+    async def _get_timer(self, timer: Timer) -> Timer:
         async with self.async_session() as session:
             async with session.begin():
                 try:
@@ -358,7 +295,7 @@ class DataBaseAPI():
 
 
 
-    async def _delete_expired_timers(self, chat_id):
+    async def _delete_expired_timers(self, chat_id) -> bool:
         async with self.async_session() as session:
             try:
                 now = datetime.now() - timedelta(seconds=5)
@@ -373,11 +310,10 @@ class DataBaseAPI():
                     database_logger.info(f"In chat {chat_id} There is no expired timers in Database")
 
                 for timer in expired_timers:
-                        timer_id, user_id = timer.timer_id, timer.user_id
+                        timer_id = timer.timer_id
                         await session.delete(timer)
                         database_logger.info(
-                            f"Expired timer {timer_id} "
-                            f"of user {user_id} was deleted"
+                            f"Expired timer {timer_id} was deleted"
                         )
                 
                 await session.commit()
@@ -389,7 +325,7 @@ class DataBaseAPI():
                 return False
 
 
-    async def add_userinfo(self, user_id, user_nickname, user_firstname) -> User | bool:
+    async def add_userinfo(self, user_id, user_nickname, user_firstname) -> User:
         async with self.async_session() as session:
             async with session.begin():
                 try:
@@ -417,7 +353,7 @@ class DataBaseAPI():
                     return False
 
 
-    async def get_userinfo(self, user_id) -> User | bool:
+    async def get_userinfo(self, user_id) -> User:
         async with self.async_session() as session:
             try:
                 result = await session.execute(
