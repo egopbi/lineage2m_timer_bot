@@ -142,7 +142,7 @@ async def set_timer(
 
     while True:
         await event.reply(
-            f"✅ Установлен таймер:\n{system_to_user_tz(timer.respawn_time)} — "
+            f"✅ Установлен таймер :\n{system_to_user_tz(timer.respawn_time)} — "
             f"**{timer.boss_name}** ({remaining_formatted_time}) — `{timer.timer_id}`\n"
         )
 
@@ -156,12 +156,14 @@ async def set_timer(
             f"In chat {chat_id} User {user_id} response "
             f"notification from timer {timer.timer_id}"
         )
-        await asyncio.sleep(300)
+        fake_dt = respawn_datetime + timedelta(days=7)
+        await db.update_timer(timer, fake_dt)
+        await asyncio.sleep(60)
         if not await db._get_timer(timer):
             backend_logger.info(f"Timer {timer.timer_id} was already deleted")
             return
 
-        respawn_datetime += interval + timedelta(seconds=300)
+        respawn_datetime += interval + timedelta(seconds=60)
         timer = await db.update_timer(timer, respawn_datetime)
         if not timer:
             await event.reply("❌ Проблема с доступом в базу данных")
