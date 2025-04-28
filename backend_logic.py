@@ -107,15 +107,27 @@ async def set_timer(
 
     remaining_time = respawn_datetime - now
     wait_seconds = remaining_time.total_seconds()
+    time_to_notification = wait_seconds - 180
     remaining_formatted_time = seconds_to_hh_mm(wait_seconds)
     
     if is_new_epoch:
-        await asyncio.sleep(wait_seconds)
+        await asyncio.sleep(time_to_notification)
+        if not await db._get_timer(timer):
+            backend_logger.info(f"Timer {timer.timer_id} was already deleted")
+            return
+
+        await event.reply(f"‼️ Босс **{boss_name}** возродится через 3 минуты, будьте готовы!")
+        backend_logger.success(
+            f"In chat {chat_id} User {user_id} response "
+            f"notification from timer {timer.timer_id}"
+        )
+
+        await asyncio.sleep(180)
         if not await db._get_timer(timer):
             backend_logger.info(f"Timer {timer.timer_id} was already deleted")
             return
         
-        await event.reply(f"✅ Босс **{boss_name}** возродился, скорее беги его убивать!")
+        await event.reply(f"✅ Босс **{boss_name}** возродился, скорее бегите его убивать!")
         backend_logger.success(
             f"In chat {chat_id} User {user_id} response "
             f"notification from timer {timer.timer_id}"
@@ -145,8 +157,23 @@ async def set_timer(
             f"✅ Установлен таймер :\n{system_to_user_tz(timer.respawn_time)} — "
             f"**{timer.boss_name}** ({remaining_formatted_time}) — `{timer.timer_id}`\n"
         )
+        
+        if time_to_notification > 0:
+            await asyncio.sleep(time_to_notification)
+            if not await db._get_timer(timer):
+                backend_logger.info(f"Timer {timer.timer_id} was already deleted")
+                return
 
-        await asyncio.sleep(wait_seconds)
+            await event.reply(f"‼️ Босс **{boss_name}** возродится через 3 минуты, будьте готовы!")
+            backend_logger.success(
+                f"In chat {chat_id} User {user_id} response "
+                f"notification from timer {timer.timer_id}"
+            )
+
+            await asyncio.sleep(180)
+        else:
+            await asyncio.sleep(wait_seconds)
+        
         if not await db._get_timer(timer):
             backend_logger.info(f"Timer {timer.timer_id} was already deleted")
             return
@@ -176,6 +203,7 @@ async def set_timer(
             f"In chat {chat_id} User {user_id} automatically updated timer {timer.timer_id}"
         )
         wait_seconds = interval.total_seconds()
+        time_to_notification = wait_seconds - 180
         remaining_formatted_time = seconds_to_hh_mm(wait_seconds)
 
 
@@ -184,7 +212,7 @@ async def get_bosses(chat_id: str, user_id: str, event):
     text_strings.append(f'Список всех боссов\n')
 
     for boss in respawn_intervals:
-        respawn_time = respawn_intervals[boss]
+        respawn_time = respawn_intervals[boss][0]
         boss_name = str(boss)
         
         text_strings.append(f"`{boss_name:<20}` | {respawn_time} hours")
